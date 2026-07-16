@@ -1,0 +1,58 @@
+# Connected relay — MediaMTX, INGEST ONLY.
+#
+# The phone publishes here via WHIP; the BRB supervisor (separate service) pulls
+# the live path over RTSP and owns the Twitch push, so the broadcast never closes
+# on a drop. There is deliberately NO runOnReady push in this file — that's the
+# whole point of the never-cut-out design. (The Phase-0 passthrough push lives in
+# ../vps/mediamtx.yml, kept as an instant rollback.)
+#
+# Per-box values are injected via MediaMTX env overrides from compose, so this
+# file stays static and host-agnostic:
+#   MTX_WEBRTCADDITIONALHOSTS = the VPS public IP (for browser ICE behind NAT)
+
+logLevel: info
+
+# SRT peer-idle tolerance (a silent uplink isn't dead until the BRB engine
+# says so) + deeper per-reader queues for gap-recovery bursts.
+readTimeout: 30s
+writeQueueSize: 1024
+
+# Read-only API on localhost — the BRB supervisor polls it for live readiness,
+# and the Phase-1 dashboard will read telemetry from it.
+api: yes
+apiAddress: 127.0.0.1:9997
+
+# --- WebRTC (WHIP ingest) ---
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+# Public IP is supplied at deploy time via MTX_WEBRTCADDITIONALHOSTS (see compose.yml).
+
+# --- RTSP (internal: the BRB live feeder pulls the phone stream from here) ---
+rtsp: yes
+rtspAddress: :8554
+
+# --- SRT (Phase 2: native HEVC ingest with a latency window — outages shorter
+# than the window are invisible to viewers. The BRB engine works unchanged: it
+# reads the same live path, and a dead SRT session stalls bytes ~5s before the
+# path drops, so the 3s stall detector still classifies drops correctly.) ---
+srt: yes
+# Known limitation: MediaMTX's SRT library (gosrt) has an open bug discarding
+# valid retransmits (datarhei/gosrt PR #133) — in-session loss recovery is
+# unreliable. Mitigated by the app's reconnect replay-ring (gap content is
+# re-sent on a fresh session) + adaptive bitrate; properly replaced when the
+# bonding phase puts srtla_rec/libsrt in front. (A single-connection ffmpeg
+# gateway was tried and REVERTED: its drain-then-exit reintroduced clean-end
+# misfires and its busy listener stalled reconnects — see 2026-07-02 log.)
+srtAddress: :8890
+
+paths:
+  preview:
+    # Browser-friendly guest preview (540p H264+Opus), republished by the BRB
+    # supervisor while a session is live — WHEP can't play the SRT path's
+    # HEVC/AAC in browsers. The studio plays /preview/whep, /live/whep fallback.
+    source: publisher
+  live:
+    # Ingest only. No push here — the BRB supervisor pulls rtsp://127.0.0.1:8554/live
+    # and pushes to Twitch with seamless live/BRB switching.
+    source: publisher

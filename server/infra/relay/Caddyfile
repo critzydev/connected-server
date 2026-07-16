@@ -1,0 +1,38 @@
+# Connected relay — bundled Caddy for a fresh/dedicated VPS.
+# Auto-HTTPS reverse proxy for WHIP signaling. Browsers require a secure context
+# for getUserMedia + WHIP, so TLS is mandatory.
+#
+# DOMAIN must have a DNS A record pointing at this VPS before first start (Caddy
+# needs it to issue the cert). WebRTC *media* does NOT go through here — it's UDP
+# straight to the public IP on :8189 (opened by setup.sh).
+#
+# DOMAIN is supplied by compose from deploy.env.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Relay discovery — the first request the app/web makes when pointed at
+	# this domain (brand, claim state, SRT/SRTLA ports). Served by the hub.
+	handle /relay/info {
+		reverse_proxy localhost:8787
+	}
+
+	# Studio session hub (websocket bus + donations): /hub/ws, /hub/donations/*…
+	# handle_path strips the /hub prefix before proxying.
+	handle_path /hub/* {
+		reverse_proxy localhost:8787
+	}
+
+	# WHIP ingest (publish) + WHEP playback (monitor) + WebRTC API -> MediaMTX.
+	handle {
+		reverse_proxy localhost:8889
+	}
+
+	# Never cache the signaling exchanges.
+	@nocache path /live/whip* /live/whep*
+	header @nocache Cache-Control "no-store"
+}
+
+# Drop-in fragments (e.g. the web app on its own domain — see setup.sh's
+# WEB_DOMAIN handling). A glob matching nothing is fine.
+import /etc/caddy/conf.d/*.caddy

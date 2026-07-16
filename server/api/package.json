@@ -1,0 +1,21 @@
+{
+  "name": "@connected/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Session hub — the websocket event bus behind the studio layer (chat, alerts, donations, mediashare, TTS). See docs/STUDIO.md.",
+  "type": "module",
+  "main": "src/main.ts",
+  "scripts": {
+    "dev": "node --watch src/main.ts",
+    "start": "node src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.5.0"
+  }
+}

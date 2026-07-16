@@ -1,0 +1,116 @@
+# Connected relay stack — fresh/dedicated VPS, never-cut-out ON by default.
+#
+#   mediamtx  — WHIP ingest (no Twitch push of its own; ingest only)
+#   brb       — the supervisor that owns the Twitch connection and switches
+#               live <-> "Reconnecting" card seamlessly (the core promise)
+#   api       — the studio session hub: chat/alerts/donations/TTS event bus
+#               (docs/STUDIO.md), reachable at https://DOMAIN/hub/*
+#   caddy     — auto-HTTPS reverse proxy for WHIP signaling + the hub
+#
+# Host networking is required so WebRTC ICE (UDP) works cleanly and so the BRB
+# supervisor can reach MediaMTX over localhost (API :9997, RTSP :8554).
+#
+# Driven entirely by deploy.env — run ./setup.sh, never `docker compose` by hand
+# (setup.sh auto-detects PUBLIC_IP and opens the firewall first).
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest-ffmpeg
+    container_name: connected-mediamtx
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      # Advertise the VPS public IP so browser ICE connects direct (behind NAT/CF).
+      - MTX_WEBRTCADDITIONALHOSTS=${PUBLIC_IP}
+    volumes:
+      - ./relay/mediamtx.yml:/mediamtx.yml:ro
+
+  brb:
+    build: ../relay/brb
+    container_name: connected-brb
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - mediamtx
+    environment:
+      # Raw key (may be empty): the supervisor builds the RTMP URL itself and,
+      # when no key is set anywhere, fetches one from the hub — which gets it
+      # from the owner's LINKED Twitch account. Link once, never paste a key.
+      - TWITCH_STREAM_KEY=${TWITCH_STREAM_KEY:-}
+      - LIVE_INPUT=rtsp://127.0.0.1:8554/live
+      - API=http://127.0.0.1:9997
+      - LIVE_PATH=live
+      - GRACE=${GRACE:-120}
+      - END_LINGER=${END_LINGER:-10}
+      - VBITRATE=${VBITRATE:-4500k}
+      - W=${W:-1280}
+      - H=${H:-720}
+      - FPS=${FPS:-30}
+      # Small-box levers — setup.sh auto-tunes these on <=2-core hosts.
+      - X264_PRESET=${X264_PRESET:-faster}
+      - PREVIEW=${PREVIEW:-1}
+      - CARD_FPS=${CARD_FPS:-}
+      - BRB_TEXT=${BRB_TEXT:-Reconnecting…}
+      - BRB_BG=${BRB_BG:-0x140a23}
+      - BRB_FG=${BRB_FG:-0xEDE8FF}
+      - BRB_MEDIA=${BRB_MEDIA:-}
+    volumes:
+      # Drop a custom BRB card (image or looping video) in relay/brb-media/ and
+      # point BRB_MEDIA at it (e.g. /brb-media/card.mp4) in deploy.env.
+      - ./relay/brb-media:/brb-media:ro
+
+  srtla:
+    # SRTLA bonding receiver (see server/relay/srtla/Dockerfile). The app's
+    # bonded mode sends here; plain SRT keeps using MediaMTX :8890 directly.
+    build: ../relay/srtla
+    container_name: connected-srtla
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - mediamtx
+
+  api:
+    build:
+      context: ../..
+      dockerfile: server/api/Dockerfile
+    container_name: connected-api
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - api_data:/data
+    environment:
+      - PORT=8787
+      - DATA_DIR=/data
+      - SESSION_CODE=${SESSION_CODE:-}
+      - TWITCH_CHANNEL=${TWITCH_CHANNEL:-}
+      # Optional: a public Twitch app client id (device-code flow) — unlocks
+      # EventSub reward/follow alerts + reward sound effects. Can also be
+      # pasted in web Settings; this just seeds it.
+      - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID:-}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - DONATION_CURRENCY=${DONATION_CURRENCY:-usd}
+      - DONATION_MIN_CENTS=${DONATION_MIN_CENTS:-100}
+      - DONATION_MEDIA_MIN_CENTS=${DONATION_MEDIA_MIN_CENTS:-500}
+      - PUBLIC_WEB_ORIGIN=${PUBLIC_WEB_ORIGIN:-https://${DOMAIN}}
+      # Advertised to the app for SRT ingest (UDP can't ride an HTTP proxy).
+      - SRT_HOST=${PUBLIC_IP}
+
+  caddy:
+    image: caddy:latest
+    container_name: connected-caddy
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./relay/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./relay/conf.d:/etc/caddy/conf.d:ro
+      - ./web-dist:/srv/web:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
+  api_data:
